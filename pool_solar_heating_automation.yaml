@@ -1,0 +1,160 @@
+# PV-optimized solar pool heating with differential temperature control
+#
+# Public example configuration for Home Assistant.
+#
+# Hardware concept:
+# - Shelly Plus 2PM
+# - Shelly sensor add-on
+# - Two temperature sensors
+# - Solar pool collector
+# - Pool circulation pump
+# - PV surplus power sensor
+#
+# Replace all generic entity IDs with your own Home Assistant entities.
+
+template:
+  - sensor:
+      - name: "Pool Temperature Delta"
+        unique_id: "sensor_pool_temperature_delta"
+        unit_of_measurement: "K"
+        state_class: measurement
+        state: >
+          {% set collector = states('sensor.pool_collector_temperature') %}
+          {% set pool = states('sensor.pool_temperature') %}
+          {% if is_number(collector) and is_number(pool) %}
+            {{ ((collector | float) - (pool | float)) | round(2) }}
+          {% else %}
+            unavailable
+          {% endif %}
+
+      - name: "Estimated Pool Heating Power"
+        unique_id: "sensor_estimated_pool_heating_power"
+        unit_of_measurement: "kW"
+        state_class: measurement
+        state: >
+          {% set delta_t = states('sensor.pool_temperature_delta') %}
+          {% set pump_power = states('sensor.pool_pump_power') %}
+          {% set factor_kw_per_k = 2.62 %}
+          {% if is_number(delta_t) and is_number(pump_power)
+                and (delta_t | float) > 0
+                and (pump_power | float) > 10 %}
+            {{ ((delta_t | float) * factor_kw_per_k) | round(2) }}
+          {% else %}
+            0
+          {% endif %}
+
+      - name: "Solar Pool Heating Performance Ratio"
+        unique_id: "sensor_solar_pool_heating_performance_ratio"
+        state_class: measurement
+        state: >
+          {% set thermal_power_kw = states('sensor.estimated_pool_heating_power') %}
+          {% set electrical_power_w = states('sensor.pool_pump_power') %}
+          {% if is_number(thermal_power_kw) and is_number(electrical_power_w)
+                and (electrical_power_w | float) > 10 %}
+            {{ (((thermal_power_kw | float) * 1000) / (electrical_power_w | float)) | round(2) }}
+          {% else %}
+            0
+          {% endif %}
+
+automation:
+  - alias: "Pool heating - turn on"
+    description: >
+      Turns on the solar pool heating pump when sufficient PV surplus is available,
+      the pool temperature is below the target temperature and the solar collector
+      is at least 4 K warmer than the pool water.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.pv_surplus_power
+        above: 600
+        for:
+          seconds: 5
+
+      - platform: numeric_state
+        entity_id: sensor.pool_temperature
+        below: 32
+        for:
+          minutes: 1
+
+      - platform: template
+        value_template: >
+          {% set collector = states('sensor.pool_collector_temperature') %}
+          {% set pool = states('sensor.pool_temperature') %}
+          {{ is_number(collector) and is_number(pool)
+             and ((collector | float) - (pool | float)) >= 4 }}
+
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.pv_surplus_power
+        above: 600
+
+      - condition: numeric_state
+        entity_id: sensor.pool_temperature
+        below: 32
+
+      - condition: template
+        value_template: >
+          {% set collector = states('sensor.pool_collector_temperature') %}
+          {% set pool = states('sensor.pool_temperature') %}
+          {{ is_number(collector) and is_number(pool)
+             and ((collector | float) - (pool | float)) >= 4 }}
+
+      - condition: state
+        entity_id: switch.pool_heating_pump
+        state: "off"
+
+    action:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.pool_heating_pump
+
+    mode: single
+
+  - alias: "Pool heating - turn off"
+    description: >
+      Turns off the solar pool heating pump when the temperature difference
+      falls below 2 K, PV surplus is no longer sufficient or the target pool
+      temperature is reached.
+
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.pool_temperature_delta
+        below: 2
+        for:
+          minutes: 1
+
+      - platform: numeric_state
+        entity_id: sensor.pv_surplus_power
+        below: 600
+        for:
+          seconds: 5
+
+      - platform: numeric_state
+        entity_id: sensor.pool_temperature
+        above: 32
+
+    condition:
+      - condition: state
+        entity_id: switch.pool_heating_pump
+        state: "on"
+
+      - condition: or
+        conditions:
+          - condition: numeric_state
+            entity_id: sensor.pool_temperature_delta
+            below: 2
+
+          - condition: numeric_state
+            entity_id: sensor.pv_surplus_power
+            below: 600
+
+          - condition: numeric_state
+            entity_id: sensor.pool_temperature
+            above: 32
+
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.pool_heating_pump
+
+    mode: single

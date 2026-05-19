@@ -56,7 +56,6 @@ template:
             0
           {% endif %}
 
-
 automation:
   - alias: "Pool heating - turn on"
     description: >
@@ -110,7 +109,6 @@ automation:
           entity_id: switch.pool_heating_pump
 
     mode: single
-
 
   - alias: "Pool heating - turn off"
     description: >
